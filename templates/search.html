@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="container body-container col-xs-9 col-lg-9" id="content" role="main">
+    <!-- Main Content -->
+    <h1>Mesoamerican Languages Portal</h1>
+
+    <!-- Main Content -->
+    <div class="search-results">
+      <h2>Search Results for <em>"K'iche'"</em></h2>
+    </div><!-- // search-results -->
+
+    <section class="listing" role="main">
+      {% for result in results %}
+        <figure>
+          <figcaption>
+            <a href="/object/{{ result.identifier }}/">
+              <h3>{{ result.title }} <span class="badge badge-info">[status]</span></h3>
+            </a>
+            <p>Subject Language(s): <a href="#">{{ result.subjectlanguage }}</a></p>
+            <p>Language(s): <a href="#">{{ result.language }}</a></p>
+          </figcaption>
+        </figure>
+      {% endfor %}
+    </section>
+  </div>
+{% endblock %}
