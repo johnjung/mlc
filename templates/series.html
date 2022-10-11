@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="container body-container col-xs-9 col-lg-9" id="content" role="main">
+    <h1><strong>Series Title:</strong> {{ title }}</h1>
+    <div class="row">
+      <!-- Main Content -->
+      <div class="col-xs-12 col-md-9 centermain"> <!-- Center Content -->
+        <dl>
+          {% for m in metadata %}
+            <dt>{{ m[0] }}</dt>
+            <dd>
+              {% for v in m[1] %}
+                {% if m[0] == 'Creator' %}
+                  {{ v.name }} {% if not loop.last %}<br>{% endif %}
+                {% elif m[0] == 'Primary Language' or m[0] == 'Subject Language' %}
+                  <a href="{{ v.code }}">{{ v.label }}</a>
+                {% elif m[0] == 'Country of Language' or m[0] == 'Location of Recording' %}
+                  <a href="{{ v.identifier }}">{{ v.label }}</a>
+                {% else %}
+                  {{ v }} {% if not loop.last %}<br>{% endif %}
+                {% endif %}
+              {% endfor %}
+            </dd>
+          {% endfor %}
+        </dl>
+
+        <h2>Items in the Series</h2>
+        {% for i in items %}
+            <p>{{ i.identifier }} <a href="/object/{{ i.noid }}/">{{ i.title }}</a></p>
+        {% endfor %}
+      </div> <!-- // Center Content -->
+    </div> <!-- // .row -->
+  </div> <!-- // .col-xs-12 .col-md-9 .centermain -->
+{% endblock %}

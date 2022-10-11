@@ -1,5 +1,5 @@
-import json, os, re, requests, urllib
-from flask import Flask, render_template, request
+import io, json, os, re, rdflib, requests, sys, urllib
+from flask import Flask, jsonify, render_template, request
 from lxml import etree as etree
 
 app = Flask(__name__)
@@ -7,18 +7,8 @@ app = Flask(__name__)
 MARKLOGIC_SERVER = os.environ['MARKLOGIC_SERVER']
 PROXY_SERVER = os.environ['PROXY_SERVER']
 
-OBJECT_PAGE_SORTED_LABELS = (
-  ('http://purl.org/dc/elements/1.1/title',                 'Title'),
-  ('http://purl.org/dc/elements/1.1/description',           'Description'),
-  ('http://lib.uchicago.edu/ucla/invertedLanguageName',     'Language'),
-  ('http://purl.org/dc/terms/spatial',                      'Location'),
-  ('http://purl.org/dc/elements/1.1/contributor',           'Contributor'),
-  ('http://purl.org/dc/elements/1.1/creator',               'Creator'),
-  ('http://purl.org/dc/elements/1.1/type',                  'Type'),
-  ('http://purl.org/dc/terms/identifier',                   'TermsIdentifier'),
-  ('http://purl.org/dc/terms/rights',                       'Rights'),
-  ('http://lib.uchicago.edu/ucla/contributorStringDisplay', 'ContributorStringDisplay'),
-)
+g = rdflib.Graph()
+g.parse('mlp.ttl')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')
@@ -28,6 +18,14 @@ class SetEncoder(json.JSONEncoder):
         if isinstance(obj, set):
             return list(obj)
         return json.JSONEncoder.default(self, obj)
+
+def glotto_labels(code):
+    with open('glotto.json') as f:
+        lookup = json.load(f)
+    try:
+        return lookup[code]
+    except KeyError:
+        return ''
 
 def get_facets(identifier_set, predicate_set):
     '''Get facets for a search result.
@@ -80,22 +78,6 @@ def get_facets(identifier_set, predicate_set):
     xml = etree.fromstring(r.text)
 
     results = {}
-
-    '''
-    {
-      "ark:61001/b2zq00v3fg6z": {
-        "http://lib.uchicago.edu/ucla/invertedLanguageName": [
-          "Castilian",
-          "Quich\u00e9, Central",
-          "Spanish"
-        ],
-        "http://purl.org/dc/terms/rights": [
-          "Public domain"
-        ]
-      },
-      ...
-    }
-    '''
 
     for result in xml.xpath(
         '//sparql:result',
@@ -235,58 +217,812 @@ def home():
         'home.html'
     )
 
+@app.route('/objectdata/<noid>/')
+def objectdata(noid):
+    assert re.match('^[a-z0-9]{12}$', noid)
+
+    # Item or series?
+    qres = g.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+        ASK {{ <{0}> dcterms:isPartOf ?o }}
+    '''.format(noid))
+    is_item = list(qres)[0]
+
+    if is_item:
+        return jsonify(itemdata(noid))
+    else:
+        return jsonify(seriesdata(noid))
+
 @app.route('/object/<noid>/')
 def object(noid):
     assert re.match('^[a-z0-9]{12}$', noid)
 
-    url = '{}/chas_query.xqy?query=identifier&collection=mila&identifier={}&format=xml'.format(
-        MARKLOGIC_SERVER,
+    r = requests.get('{}/objectdata/{}/'.format(
+        'http://localhost:5000',
         noid
-    )
-    r = requests.get(url)
+    ))
+    metadata = json.loads(r.text)
 
-    xml = etree.fromstring(r.text)
+    # Item or series?
+    is_item = any([m[0] == 'Part of Series' for m in metadata])
+   
+    if is_item:
+        return item(noid, metadata)
+    else:
+        return series(noid, metadata)
 
-    # build a dictionary where keys are the predicate URI and values are an
-    # array of object literals for each predicate. E.g.,
-    # {
-    #   'http://id.loc.gov/ontologies/bibframe/title': ['HanksF152'],
-    #   ...
-    # }
-    result_dict = {}
-    for result in xml.xpath(
-        '//sparql:result',
-        namespaces={'sparql': 'http://www.w3.org/2005/sparql-results#'}
-    ):
-        p = result.xpath(
-          'sparql:binding[@name="p"]/sparql:uri', 
-          namespaces={'sparql': 'http://www.w3.org/2005/sparql-results#'}
-        )[0].text
-        o = result.xpath(
-          'sparql:binding[@name="o"]/sparql:literal', 
-          namespaces={'sparql': 'http://www.w3.org/2005/sparql-results#'}
-        )[0].text
-        if p not in result_dict:
-            result_dict[p] = []
-        result_dict[p].append(o)
+def itemdata(noid):
+    qres = g.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
 
-    metadata = [] 
-    for p, label in OBJECT_PAGE_SORTED_LABELS:
-        if p in result_dict:
-            metadata.append((label, result_dict[p]))
+        CONSTRUCT {{
+            <{0}> ?p ?o .
+            <{0}> ?p1 ?o1 .
+            ?o1 ?p2 ?o2 .
+            <{0}> dc:title ?titleNode .
+            ?titleNode dma:collectionTitle ?collectionTitle .
+            ?titleNode dma:collectionTitleType ?collectionTitleType
+        }} WHERE {{
+            {{
+                <{0}> ?p ?o .
+                <{0}> ?p1 ?o1 .
+                ?o1 ?p2 ?o2 .
+                <{0}> dcterms:isPartOf ?seriesNode .
+                ?seriesNode dc:title ?titleNode .
+                ?titleNode dma:collectionTitle ?collectionTitle .
+                ?titleNode dma:collectionTitleType ?collectionTitleType
+            }}
+        }}
+    '''.format(noid))
 
+    graph = rdflib.Graph()
+
+    for k, v in {
+        'aes60-2011': 'https://www.aes.org/publications/standards/',
+        'audioMD':    'http://www.loc.gov/audioMD',
+        'bf':         'http://id.loc.gov/ontologies/bibframe/',
+        'dc':         'http://purl.org/dc/elements/1.1/',
+        'dcterms':    'http://purl.org/dc/terms/',
+        'dma':        'http://lib.uchicago.edu/dma/',
+        'edm':        'http://www.europeana.eu/schemas/edm/',
+        'lexvo':      'https://www.iso.org/standard/39534.html',
+        'olac':       'http://www.language−archives.org/OLAC/metadata.html',
+        'ore':        'http://www.openarchives.org/ore/terms/',
+        'vra':        'http://purl.org/vra/'
+    }.items():
+        graph.bind(k, rdflib.Namespace(v))
+
+    for s, p, o in qres:
+        graph.add((s, p, o))
+
+    # JEJ
+    # print(graph.serialize(format='turtle', base=rdflib.Namespace('https://ark.lib.uchicago.edu/ark:61001/')))
+
+    # Panopto Identifier
+    qres = graph.query('''
+            BASE <https://ark.lib.uchicago.edu/ark:61001/>
+            PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+            SELECT DISTINCT ?panoptoIdentifier
+            WHERE {{ <{0}> dma:panoptoIdentifier ?panoptoIdentifier
+            }} 
+        '''.format(noid))
+    panopto_identifiers = []
+    for row in qres:
+        panopto_identifiers.append(str(row[0]).strip())
+
+    # Primary Titles
+    qres = graph.query('''
+            BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+            SELECT DISTINCT ?itemTitle
+            WHERE {{ <{}> bf:title ?titleNode .
+                     ?titleNode dma:itemTitle ?itemTitle .
+                     ?titleNode dma:itemTitleType ?itemTitleType .
+                     FILTER(?itemTitleType = 'Primary')
+            }} 
+        '''.format(noid))
+    primary_titles = []
+    for row in qres:
+        primary_titles.append(str(row[0]).strip())
+
+    # Alternative Titles
+    qres = graph.query('''
+            BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+            SELECT DISTINCT ?itemTitle
+            WHERE {{ <{}> bf:title ?titleNode .
+                     ?titleNode dma:itemTitle ?itemTitle .
+                     ?titleNode dma:itemTitleType ?itemTitleType .
+                     FILTER(?itemTitleType = 'Alternate')
+            }} 
+        '''.format(noid))
+    alternative_titles = []
+    for row in qres:
+        alternative_titles.append(str(row[0]).strip())
+
+    # Item Identifiers
+    qres = graph.query('''
+            BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+            SELECT DISTINCT ?itemIdentifier
+            WHERE {{ 
+                <{0}> dma:itemIdentifier ?itemIdentifier
+            }} 
+        '''.format(noid))
+    item_identifiers = []
+    for row in qres:
+        item_identifiers.append(str(row[0]).strip())
+
+    # Creator
+    qres = graph.query('''
+            BASE <https://ark.lib.uchicago.edu/ark:61001/>
+            PREFIX dc: <http://purl.org/dc/elements/1.1/>
+            PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+            SELECT DISTINCT ?contributorName ?contributorRole ?contributorString
+            WHERE {{
+                <{0}> dc:contributor ?contributorNode .
+                ?contributorNode dma:itemContributorName ?contributorName .
+                ?contributorNode dma:itemContributorRole ?contributorRole . 
+                ?contributorNode dma:itemContributorString ?contributorString
+            }}
+        '''.format(noid))
+    creators = []
+    for row in qres:
+        creators.append({
+            'name': str(row[0]).strip(),
+            'role': str(row[1]).strip(),
+            'string': str(row[2]).strip()
+        })
+
+    # Subject Languages
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?languageCode ?languageRole
+        WHERE {{
+            <{0}> dc:language ?languageNode .
+            ?languageNode lexvo:iso639P3PCode ?languageCode .
+            ?languageNode dma:languageRole ?languageRole .
+            FILTER(?languageRole = 'Subject' || ?languageRole = 'Both')
+        }}
+    '''.format(noid))
+    subject_languages = []
+    for row in qres:
+        label = glotto_labels(str(row[0]).strip())
+        if label == '':
+            label = str(row[0]).strip()
+        subject_languages.append({
+            'code': str(row[0]).strip(),
+            'label': label,
+            'role': str(row[1]).strip()
+        })
+
+    # Primary Languages
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?languageCode ?languageRole
+        WHERE {{
+            <{0}> dc:language ?languageNode .
+            ?languageNode lexvo:iso639P3PCode ?languageCode .
+            ?languageNode dma:languageRole ?languageRole .
+            FILTER(?languageRole = 'Primary' || ?languageRole = 'Both')
+        }}
+    '''.format(noid))
+    primary_languages = []
+    for row in qres:
+        label = glotto_labels(str(row[0]).strip())
+        if label == '':
+            label = str(row[0]).strip()
+        primary_languages.append({
+            'code': str(row[0]).strip(),
+            'label': label,
+            'role': str(row[1]).strip()
+        })
+
+    # Location of Recording
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?coverageIdentifier ?coverageType
+        WHERE {{
+            <{0}> dma:coverage ?coverageNode .
+            ?coverageNode dcterms:spatial ?coverageIdentifier .
+            ?coverageNode dma:itemCoverageType ?coverageType .
+            FILTER(?coverageType = 'recording')
+        }}
+    '''.format(noid))
+    location_of_recordings = []
+    for row in qres:
+        location_of_recordings.append({
+            'identifier': str(row[0]).strip(),
+            'label': str(row[0]).strip(),
+            'type': str(row[1]).strip()
+        })
+
+    # Country of Language
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?coverageIdentifier ?coverageType
+        WHERE {{
+            <{0}> dma:coverage ?coverageNode .
+            ?coverageNode dcterms:spatial ?coverageIdentifier .
+            ?coverageNode dma:itemCoverageType ?coverageType .
+            FILTER(?coverageType = 'language')
+        }}
+    '''.format(noid))
+    country_of_languages = []
+    for row in qres:
+        country_of_languages.append({
+            'identifier': str(row[0]).strip(),
+            'label': str(row[0]).strip(),
+            'type': str(row[1]).strip()
+        })
+
+    # Date
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?displayDate
+        WHERE {{
+            <{0}> dma:displayDate ?displayDate 
+        }}
+    '''.format(noid))
+    dates = []
+    for row in qres:
+        dates.append(str(row[0]).strip())
+
+    # Description
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+
+        SELECT DISTINCT ?description
+        WHERE {{
+            <{0}> dc:description ?description
+        }}
+    '''.format(noid))
+    descriptions = []
+    for row in qres:
+        descriptions.append(str(row[0]).strip())
+
+    # Linguistic Data Types
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?linguisticDataType
+        WHERE {{
+            <{0}> dma:linguisticDataType ?linguisticDataType
+        }}
+    '''.format(noid))
+    linguistic_data_types = []
+    for row in qres:
+        linguistic_data_types.append(str(row[0]).strip())
+
+    # Discourse Types
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX olac: <http://www.language−archives.org/OLAC/metadata.html>
+
+        SELECT DISTINCT ?discourseType
+        WHERE {{
+            <{0}> olac:discourseType ?discourseType
+        }}
+    '''.format(noid))
+    discourse_types = []
+    for row in qres:
+        discourse_types.append(str(row[0]).strip())
+
+   # Item Content Type
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?itemContentType
+        WHERE {{
+            <{0}> dma:DMAContentType ?itemContentType
+        }}
+    '''.format(noid))
+    item_content_types = []
+    for row in qres:
+        item_content_types.append(str(row[0]).strip())
+
+   # Part of Series
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?seriesNode ?seriesTitle
+        WHERE {{
+            <{0}> dcterms:isPartOf ?seriesNode .
+            ?seriesNode dc:title ?titleNode .
+            ?titleNode dma:collectionTitle ?seriesTitle .
+            ?titleNode dma:collectionTitleType ?seriesTitleType .
+            FILTER(?seriesTitleType = 'Primary')
+        }}
+    '''.format(noid))
+    part_of_series = []
+    for row in qres:
+        series_identifier = str(row[0]).strip().replace('https://ark.lib.uchicago.edu/ark:61001/', '')
+        series_title = str(row[1]).strip()
+        part_of_series.append({
+            'identifier': series_identifier,
+            'title': series_title
+        })
+
+    # Access Level
+    qres = graph.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?accessRights
+        WHERE {{
+            <{0}> dcterms:isPartOf ?seriesNode .
+            ?seriesNode dcterms:accessRights ?accessRights
+        }}
+    '''.format(noid))
+    access_levels = []
+    for row in qres:
+        access_levels.append(str(row[0]).strip())
+
+    metadata = []
+    if panopto_identifiers:
+        metadata.append(('Panopto Identifer', panopto_identifiers))
+    if primary_titles:
+        metadata.append(('Item Title', primary_titles))
+    if alternative_titles:
+        metadata.append(('Alternative Title', alternative_titles))
+    if item_identifiers:
+        metadata.append(('Item Identifier', item_identifiers))
+    if creators:
+        metadata.append(('Contributor', creators))
+    if subject_languages: 
+        metadata.append(('Subject Language', subject_languages))
+    if primary_languages:
+        metadata.append(('Primary Language', primary_languages))
+    if location_of_recordings:
+        metadata.append(('Location of Language', location_of_recordings))
+    if country_of_languages:
+        metadata.append(('Country of Language', country_of_languages))
+    if dates:
+        metadata.append(('Date', dates))
+    if descriptions:
+        metadata.append(('Description', descriptions))
+    if linguistic_data_types:
+        metadata.append(('Linguistic Data Type', linguistic_data_types))
+    if discourse_types:
+        metadata.append(('Discourse Type', discourse_types))
+    if item_content_types:
+        metadata.append(('Item Content Type', item_content_types))
+    if part_of_series:
+        metadata.append(('Part of Series', part_of_series))
+    return metadata
+
+def item(noid, metadata):
+    # JEJ
+
+    panopto_identifier = ''
+    rights = ''
     title = ''
-    if 'http://purl.org/dc/elements/1.1/title' in result_dict:
-        title = result_dict['http://id.loc.gov/ontologies/bibframe/title'][0]
-
-    rights = 'Restricted'
-    if 'http://purl.org/dc/terms/rights' in result_dict:
-        rights = result_dict['http://purl.org/dc/terms/rights'][0]
+    metadata_out = []
+    for m in metadata:
+        if m[0] == 'Panopto Identifier':
+            panopto_identifier = m[1][0]
+        else:
+            if m[0] == 'Item Title':
+                title = m[1][0]
+            metadata_out.append(m)
 
     return render_template(
-        'object.html',
-        metadata = metadata,
+        'item.html',
+        metadata = metadata_out,
+        panopto_identifier = panopto_identifier,
         rights = rights,
+        title = title
+    )
+
+def seriesdata(noid):
+    '''Pre-process series data. Move contributors, coverages, dates and
+       languages up from item nodes into series nodes. Include all item
+       nodes belonging to the series, but prune each to include only
+       the title, identifier, and isPartOf. 
+
+        Args: 
+          noid - a string, the NOID for this series.
+ 
+        Returns:
+          an array of JSON-LD data.
+    '''
+
+    qres = g.query('''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+        CONSTRUCT {{
+            <{0}> dcterms:accessRights ?accessRightsSubject .
+            <{0}> dc:contributor ?contributorNode .
+            ?contributorNode ?contributorPredicate ?contributorSubject .
+            <{0}> dc:description ?descriptionSubject .
+            <{0}> dc:identifier ?identifierSubject .
+            <{0}> dc:language ?languageNode .
+            ?languageNode ?languagePredicate ?languageSubject .
+            <{0}> dc:title ?titleNode .
+            ?titleNode ?titlePredicate ?titleSubject .
+            <{0}> dma:coverage ?coverageNode .
+            ?coverageNode ?coveragePredicate ?coverageSubject .
+            <{0}> dma:displayDate ?dateSubject .
+            ?itemNode bf:title ?itemTitleNode .
+            ?itemNode dcterms:isPartOf <{0}> .
+            ?itemNode dma:itemIdentifier ?itemIdentifier .
+            ?itemTitleNode ?itemTitlePredicate ?itemTitleObject .
+            <{0}> rdf:type ?typeSubject
+        }} WHERE {{
+            {{
+                <{0}> dcterms:accessRights ?accessRightsSubject
+            }} UNION {{
+                ?contributorItem dcterms:isPartOf <{0}> .
+                ?contributorItem dc:contributor ?contributorNode .
+                ?contributorNode ?contributorPredicate ?contributorSubject .
+                ?contributorNode dma:itemContributorRole ?contributorRole .
+                FILTER(?contributorRole != 'contributor')
+            }} UNION {{
+                ?coverageItem dcterms:isPartOf <{0}> .
+                ?coverageItem dma:coverage ?coverageNode .
+                ?coverageNode ?coveragePredicate ?coverageSubject .
+            }} UNION {{
+                ?dateItem dcterms:isPartOf <{0}> .
+                ?dateItem dma:displayDate ?dateSubject
+            }} UNION {{
+                <{0}> dc:description ?descriptionSubject 
+            }} UNION {{
+                <{0}> dc:identifier ?identifierSubject
+            }} UNION {{
+                <{0}> dc:title ?titleNode .
+                ?titleNode ?titlePredicate ?titleSubject
+            }} UNION {{
+                ?itemNode dcterms:isPartOf <{0}> .
+                ?itemNode dma:itemIdentifier ?itemIdentifier
+            }} UNION {{
+                ?itemNode dcterms:isPartOf <{0}> .
+                ?itemNode bf:title ?itemTitleNode .
+                ?itemTitleNode ?itemTitlePredicate ?itemTitleObject
+            }} UNION {{
+                ?languageItem dcterms:isPartOf <{0}> .
+                ?languageItem dc:language ?languageNode .
+                ?languageNode ?languagePredicate ?languageSubject
+            }} UNION {{
+                <{0}> rdf:type ?typeSubject 
+            }}
+        }}
+    '''.format(noid))
+
+    subgraph = rdflib.Graph()
+    for k, v in {
+        'aes60-2011': 'https://www.aes.org/publications/standards/',
+        'audioMD':    'http://www.loc.gov/audioMD',
+        'bf':         'http://id.loc.gov/ontologies/bibframe/',
+        'dc':         'http://purl.org/dc/elements/1.1/',
+        'dcterms':    'http://purl.org/dc/terms/',
+        'dma':        'http://lib.uchicago.edu/dma/',
+        'edm':        'http://www.europeana.eu/schemas/edm/',
+        'lexvo':      'https://www.iso.org/standard/39534.html',
+        'olac':       'http://www.language−archives.org/OLAC/metadata.html',
+        'ore':        'http://www.openarchives.org/ore/terms/',
+        'vra':        'http://purl.org/vra/'
+    }.items():
+        subgraph.bind(k, rdflib.Namespace(v))
+  
+    for s, p, o in qres: 
+        subgraph.add((s, p, o))
+
+    # JEJ
+    # print(subgraph.serialize(format='turtle', base=rdflib.Namespace('https://ark.lib.uchicago.edu/ark:61001/')))
+
+    #############
+    # STAGE TWO #
+    #############
+
+    # Primary Titles
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?primaryTitle
+        WHERE {{
+            <{0}> dc:title ?titleNode .
+            ?titleNode dma:collectionTitle ?primaryTitle .
+            ?titleNode dma:collectionTitleType ?collectionTitleType .
+            FILTER(?collectionTitleType = 'Primary')
+        }}
+    '''.format(noid)
+
+    primary_titles = []
+    qres = subgraph.query(q)
+    for row in qres:
+        primary_titles.append(str(row[0]).strip())
+
+    # Alternative Titles
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?alternativeTitle
+        WHERE {{
+            <{0}> dc:title ?titleNode .
+            ?titleNode dma:collectionTitle ?alternativeTitle .
+            ?titleNode dma:collectionTitleType ?collectionTitleType .
+            FILTER(?collectionTitleType = 'Alternate')
+        }}
+    '''.format(noid)
+
+    alternative_titles = []
+    qres = subgraph.query(q)
+    for row in qres:
+        alternative_titles.append(str(row[0]).strip())
+
+    # Series Identifier
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+
+        SELECT DISTINCT ?seriesIdentifier
+        WHERE {{
+            <{0}> dc:identifier ?seriesIdentifier  .
+        }}
+    '''.format(noid)
+
+    series_identifiers = []
+    qres = subgraph.query(q)
+    for row in qres:
+        series_identifiers.append(str(row[0]).strip())
+
+    # Collections
+    collections = ['Digital Media Archive']
+
+    # Creator
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?contributorName ?contributorRole ?contributorString
+        WHERE {{
+            <{0}> dc:contributor ?contributorNode .
+            ?contributorNode dma:itemContributorName ?contributorName .
+            ?contributorNode dma:itemContributorRole ?contributorRole . 
+            ?contributorNode dma:itemContributorRole ?contributorString
+        }}
+    '''.format(noid)
+
+    creators = []
+    qres = subgraph.query(q)
+    for row in qres:
+        creators.append({
+            'name': str(row[0]).strip(),
+            'role': str(row[1]).strip(),
+            'string': str(row[2]).strip()
+        })
+
+    # Subject Languages
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?languageCode ?languageRole
+        WHERE {{
+            <{0}> dc:language ?languageNode .
+            ?languageNode lexvo:iso639P3PCode ?languageCode .
+            ?languageNode dma:languageRole ?languageRole .
+            FILTER(?languageRole = 'Subject' || ?languageRole = 'Both')
+        }}
+    '''.format(noid)
+    subject_languages = []
+    qres = subgraph.query(q)
+    for row in qres:
+        label = glotto_labels(str(row[0]).strip())
+        if label == '':
+            label = str(row[0]).strip()
+        subject_languages.append({
+            'code': str(row[0]).strip(),
+            'label': label,
+            'role': str(row[1]).strip()
+        })
+
+    # Primary Languages
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?languageCode ?languageRole
+        WHERE {{
+            <{0}> dc:language ?languageNode .
+            ?languageNode lexvo:iso639P3PCode ?languageCode .
+            ?languageNode dma:languageRole ?languageRole .
+            FILTER(?languageRole = 'Primary' || ?languageRole = 'Both')
+        }}
+    '''.format(noid)
+    primary_languages = []
+    qres = subgraph.query(q)
+    for row in qres:
+        label = glotto_labels(str(row[0]).strip())
+        if label == '':
+            label = str(row[0]).strip()
+        primary_languages.append({
+            'code': str(row[0]).strip(),
+            'label': label,
+            'role': str(row[1]).strip()
+        })
+
+    # Location of Recording
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?coverageIdentifier ?coverageType
+        WHERE {{
+            <{0}> dma:coverage ?coverageNode .
+            ?coverageNode dcterms:spatial ?coverageIdentifier .
+            ?coverageNode dma:itemCoverageType ?coverageType .
+            FILTER(?coverageType = 'recording')
+        }}
+    '''.format(noid)
+    location_of_recordings = []
+    qres = subgraph.query(q)
+    for row in qres:
+        location_of_recordings.append({
+            'identifier': str(row[0]).strip(),
+            'label': str(row[0]).strip(),
+            'type': str(row[1]).strip()
+        })
+
+    # Country of Language
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?coverageIdentifier ?coverageType
+        WHERE {{
+            <{0}> dma:coverage ?coverageNode .
+            ?coverageNode dcterms:spatial ?coverageIdentifier .
+            ?coverageNode dma:itemCoverageType ?coverageType .
+            FILTER(?coverageType = 'language')
+        }}
+    '''.format(noid)
+    country_of_languages = []
+    qres = subgraph.query(q)
+    for row in qres:
+        country_of_languages.append({
+            'identifier': str(row[0]).strip(),
+            'label': str(row[0]).strip(),
+            'type': str(row[1]).strip()
+        })
+
+    # Date
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?displayDate
+        WHERE {{
+            <{0}> dma:displayDate ?displayDate 
+        }}
+    '''.format(noid)
+    dates = []
+    qres = subgraph.query(q)
+    for row in qres:
+        dates.append(str(row[0]).strip())
+
+    # Description
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+
+        SELECT DISTINCT ?description
+        WHERE {{
+            <{0}> dc:description ?description
+        }}
+    '''.format(noid)
+    descriptions = []
+    qres = subgraph.query(q)
+    for row in qres:
+        descriptions.append(str(row[0]).strip())
+
+    # Items
+    q = '''
+        BASE <https://ark.lib.uchicago.edu/ark:61001/>
+        PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+
+        SELECT DISTINCT ?itemNode ?itemIdentifier ?itemTitle
+        WHERE {{
+            ?itemNode dcterms:isPartOf <{0}> .
+            ?itemNode dma:itemIdentifier ?itemIdentifier .
+            ?itemNode bf:title ?itemTitleNode .
+            ?itemTitleNode dma:itemTitle ?itemTitle
+        }}
+    '''.format(noid)
+    items = []
+    qres = subgraph.query(q)
+    for row in qres:
+        items.append({
+            'identifier': str(row[1]).strip(),
+            'noid': str(row[0]).strip().split('/').pop(),
+            'title': str(row[2].strip())
+        })
+
+    metadata = []
+    if primary_titles:
+        metadata.append(('Primary Title', primary_titles))
+    if alternative_titles:
+        metadata.append(('Alternative Title', alternative_titles))
+    if series_identifiers:
+        metadata.append(('Series Identifier', series_identifiers))
+    if collections:
+        metadata.append(('Collection', collections))
+    if creators:
+        metadata.append(('Creator', creators))
+    if subject_languages:
+        metadata.append(('Subject Language', subject_languages))
+    if primary_languages:
+        metadata.append(('Primary Language', primary_languages))
+    if location_of_recordings: 
+        metadata.append(('Location of Recording', location_of_recordings))
+    if country_of_languages:
+        metadata.append(('Country of Language', country_of_languages))
+    if dates:
+        metadata.append(('Date', dates))
+    if descriptions:
+        metadata.append(('Description', descriptions))
+    if items:
+        metadata.append(('Items', items))
+    return metadata
+
+def series(noid, metadata):
+    # extract primary title and items.
+    metadata_out = []
+    title = []
+    items = []
+    for m in metadata:
+        if m[0] == 'Primary Title':
+            title = m[1][0]
+        elif m[0] == 'Items':
+            items = m[1]
+        else:
+            metadata_out.append(m)
+
+    return render_template(
+        'series.html',
+        items = items,
+        metadata = metadata_out,
+        rights = 'test',
         title = title
     )
 
@@ -319,8 +1055,6 @@ def search():
         r = requests.get(url)
         xml = etree.fromstring(r.text)
         results = process_search_results(xml)
-
-    print(json.dumps(results['facets'], cls=SetEncoder, indent=2))
 
     return render_template(
         'search.html',

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="container body-container col-xs-9 col-lg-9" id="content" role="main">
+    <h1>{{ title }} <span class="badge badge-success">{{ rights }}</span></h1>
+    <div class="row">
+      <!-- Main Content -->
+      <div class="col-xs-12 col-md-9 centermain"> <!-- Center Content -->
+        {% if panopto_identifier %}
+          <div>
+            <iframe src="https://uchicago.hosted.panopto.com/Panopto/Pages/Embed.aspx?id={{ panopto_identifier }}&autoplay=false&offerviewer=true&showtitle=true&showbrand=true&captions=false&interactivity=all" height="100" width="720" style="border: 1px solid #464646;" allowfullscreen allow="autoplay"></iframe>
+          </div>
+          <p></p>
+        {% endif %}
+        <dl>
+          {% for m in metadata %}
+            <dt>{{ m[0] }}</dt>
+            <dd>
+              {% for v in m[1] %}
+                {% if m[0] == 'Contributor' %}
+                    {{ v.string }} 
+                {% elif m[0] == 'Subject Language' or m[0] == 'Primary Language' %}
+                  <a href="#{{ v.code }}">{{ v.label }}</a>
+                {% elif m[0] == 'Location of Language' or m[0] == 'Country of Language' %}
+                  <a href="#{{ v.identifier }}">{{ v.label }}</a>
+                {% elif m[0] == 'Part of Series' %}
+                  <a href="/object/{{ v.identifier }}/">{{ v.title }}</a> {% if not loop.last %}<br>{% endif %}
+                {% else %}
+                  {{ v }} {% if not loop.last %}<br>{% endif %}
+                {% endif %}
+              {% endfor %}
+            </dd>
+          {% endfor %}
+        </dl>
+
+        <p>&nbsp;<br/>&nbsp;<br/>&nbsp;<br/></p>
+        <p>&nbsp;<br/>&nbsp;<br/>&nbsp;<br/></p>
+        <p>&nbsp;<br/>&nbsp;<br/>&nbsp;<br/></p>
+        <p>&nbsp;<br/>&nbsp;<br/>&nbsp;<br/></p>
+      </div> <!-- // Center Content -->
+    </div> <!-- // .row -->
+  </div> <!-- // .col-xs-12 .col-md-9 .centermain -->
+{% endblock %}
