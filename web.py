@@ -3,12 +3,17 @@ from flask import Flask, jsonify, render_template, request
 from lxml import etree as etree
 
 app = Flask(__name__)
+app.config.from_pyfile('local.py')
 
-MARKLOGIC_SERVER = os.environ['MARKLOGIC_SERVER']
-PROXY_SERVER = os.environ['PROXY_SERVER']
+MARKLOGIC_SERVER=app.config['MARKLOGIC_SERVER']
+PROXY_SERVER=app.config['PROXY_SERVER']
 
-g = rdflib.Graph()
-g.parse('mlp.ttl')
+#g = rdflib.Graph()
+#g.parse(app.config['MLP_TRIPLES'])
+
+print('!!!')
+#print(len(g))
+print('!!!')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0')
@@ -20,7 +25,7 @@ class SetEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 def glotto_labels(code):
-    with open('glotto.json') as f:
+    with open(app.config['GLOTTO_JSON']) as f:
         lookup = json.load(f)
     try:
         return lookup[code]
@@ -222,12 +227,27 @@ def objectdata(noid):
     assert re.match('^[a-z0-9]{12}$', noid)
 
     # Item or series?
-    qres = g.query('''
+    q ='''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
 
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+
         ASK {{ <{0}> dcterms:isPartOf ?o }}
-    '''.format(noid))
-    is_item = list(qres)[0]
+    '''.format(noid)
+
+    r = requests.get(
+        headers={
+            'Content-type': 'application/sparql'
+        },  
+        url='http://marklogic.lib.uchicago.edu:8031/v1/graphs/sparql?query={}'.format(
+            urllib.parse.quote_plus(q)
+        )
+    )   
+
+    if r.text == 'true':
+        is_item = True
+    else:
+        is_item = False
 
     if is_item:
         return jsonify(itemdata(noid))
@@ -253,7 +273,7 @@ def object(noid):
         return series(noid, metadata)
 
 def itemdata(noid):
-    qres = g.query('''
+    q = '''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
@@ -266,7 +286,7 @@ def itemdata(noid):
             ?titleNode dma:collectionTitle ?collectionTitle .
             ?titleNode dma:collectionTitleType ?collectionTitleType
         }} WHERE {{
-            {{
+            GRAPH <http://lib.uchicago.edu/mlp> {{
                 <{0}> ?p ?o .
                 <{0}> ?p1 ?o1 .
                 ?o1 ?p2 ?o2 .
@@ -276,7 +296,17 @@ def itemdata(noid):
                 ?titleNode dma:collectionTitleType ?collectionTitleType
             }}
         }}
-    '''.format(noid))
+    '''.format(noid)
+
+    r = requests.get(
+        headers={
+            'Accept': 'text/turtle',
+            'Content-type': 'application/sparql'
+        },  
+        url='http://marklogic.lib.uchicago.edu:8031/v1/graphs/sparql?query={}'.format(
+            urllib.parse.quote_plus(q)
+        )
+    )   
 
     graph = rdflib.Graph()
 
@@ -295,10 +325,10 @@ def itemdata(noid):
     }.items():
         graph.bind(k, rdflib.Namespace(v))
 
-    for s, p, o in qres:
-        graph.add((s, p, o))
+    graph.parse(data=r.text, format='turtle')
 
     # JEJ
+    print('itemdata a')
     # print(graph.serialize(format='turtle', base=rdflib.Namespace('https://ark.lib.uchicago.edu/ark:61001/')))
 
     # Panopto Identifier
@@ -313,6 +343,9 @@ def itemdata(noid):
     panopto_identifiers = []
     for row in qres:
         panopto_identifiers.append(str(row[0]).strip())
+
+    # JEJ
+    print('itemdata3')
 
     # Primary Titles
     qres = graph.query('''
