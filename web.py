@@ -8,13 +8,6 @@ app.config.from_pyfile('local.py')
 MARKLOGIC_SERVER=app.config['MARKLOGIC_SERVER']
 PROXY_SERVER=app.config['PROXY_SERVER']
 
-#g = rdflib.Graph()
-#g.parse(app.config['MLP_TRIPLES'])
-
-print('!!!')
-#print(len(g))
-print('!!!')
-
 if __name__ == '__main__':
     app.run(host='0.0.0.0')
 
@@ -25,7 +18,8 @@ class SetEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 def glotto_labels(code):
-    with open(app.config['GLOTTO_JSON']) as f:
+    #with open(app.config['GLOTTO_JSON']) as f:
+    with open('glotto.json') as f:
         lookup = json.load(f)
     try:
         return lookup[code]
@@ -275,7 +269,9 @@ def object(noid):
 def itemdata(noid):
     q = '''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
 
         CONSTRUCT {{
@@ -327,10 +323,6 @@ def itemdata(noid):
 
     graph.parse(data=r.text, format='turtle')
 
-    # JEJ
-    print('itemdata a')
-    # print(graph.serialize(format='turtle', base=rdflib.Namespace('https://ark.lib.uchicago.edu/ark:61001/')))
-
     # Panopto Identifier
     qres = graph.query('''
             BASE <https://ark.lib.uchicago.edu/ark:61001/>
@@ -344,12 +336,12 @@ def itemdata(noid):
     for row in qres:
         panopto_identifiers.append(str(row[0]).strip())
 
-    # JEJ
-    print('itemdata3')
-
     # Primary Titles
     qres = graph.query('''
             BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+            PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
+            PREFIX dma: <http://lib.uchicago.edu/dma/>
 
             SELECT DISTINCT ?itemTitle
             WHERE {{ <{}> bf:title ?titleNode .
@@ -366,6 +358,9 @@ def itemdata(noid):
     qres = graph.query('''
             BASE <https://ark.lib.uchicago.edu/ark:61001/>
 
+            PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
+            PREFIX dma: <http://lib.uchicago.edu/dma/>
+
             SELECT DISTINCT ?itemTitle
             WHERE {{ <{}> bf:title ?titleNode .
                      ?titleNode dma:itemTitle ?itemTitle .
@@ -380,6 +375,8 @@ def itemdata(noid):
     # Item Identifiers
     qres = graph.query('''
             BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+            PREFIX dma: <http://lib.uchicago.edu/dma/>
 
             SELECT DISTINCT ?itemIdentifier
             WHERE {{ 
@@ -415,8 +412,10 @@ def itemdata(noid):
     # Subject Languages
     qres = graph.query('''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
+        PREFIX lexvo: <https://www.iso.org/standard/39534.html>
 
         SELECT DISTINCT ?languageCode ?languageRole
         WHERE {{
@@ -442,6 +441,7 @@ def itemdata(noid):
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
+        PREFIX lexvo: <https://www.iso.org/standard/39534.html>
 
         SELECT DISTINCT ?languageCode ?languageRole
         WHERE {{
@@ -465,6 +465,7 @@ def itemdata(noid):
     # Location of Recording
     qres = graph.query('''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX dcterms: <http://purl.org/dc/terms/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
 
@@ -509,6 +510,7 @@ def itemdata(noid):
     # Date
     qres = graph.query('''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX dcterms: <http://purl.org/dc/terms/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
 
@@ -524,6 +526,7 @@ def itemdata(noid):
     # Description
     qres = graph.query('''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
 
         SELECT DISTINCT ?description
@@ -580,6 +583,7 @@ def itemdata(noid):
    # Part of Series
     qres = graph.query('''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
         PREFIX dcterms: <http://purl.org/dc/terms/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
@@ -605,9 +609,8 @@ def itemdata(noid):
     # Access Level
     qres = graph.query('''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
-        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+
         PREFIX dcterms: <http://purl.org/dc/terms/>
-        PREFIX dma: <http://lib.uchicago.edu/dma/>
 
         SELECT DISTINCT ?accessRights
         WHERE {{
@@ -653,8 +656,6 @@ def itemdata(noid):
     return metadata
 
 def item(noid, metadata):
-    # JEJ
-
     panopto_identifier = ''
     rights = ''
     title = ''
@@ -688,8 +689,14 @@ def seriesdata(noid):
           an array of JSON-LD data.
     '''
 
-    qres = g.query('''
+    q = '''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
+        PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
+        PREFIX dc: <http://purl.org/dc/elements/1.1/>
+        PREFIX dcterms: <http://purl.org/dc/terms/>
+        PREFIX dma: <http://lib.uchicago.edu/dma/>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
 
         CONSTRUCT {{
             <{0}> dcterms:accessRights ?accessRightsSubject .
@@ -747,7 +754,17 @@ def seriesdata(noid):
                 <{0}> rdf:type ?typeSubject 
             }}
         }}
-    '''.format(noid))
+    '''.format(noid)
+
+    r = requests.get(
+        headers={
+            'Accept': 'text/turtle',
+            'Content-type': 'application/sparql'
+        },  
+        url='http://marklogic.lib.uchicago.edu:8031/v1/graphs/sparql?query={}'.format(
+            urllib.parse.quote_plus(q)
+        )
+    )   
 
     subgraph = rdflib.Graph()
     for k, v in {
@@ -764,12 +781,8 @@ def seriesdata(noid):
         'vra':        'http://purl.org/vra/'
     }.items():
         subgraph.bind(k, rdflib.Namespace(v))
-  
-    for s, p, o in qres: 
-        subgraph.add((s, p, o))
 
-    # JEJ
-    # print(subgraph.serialize(format='turtle', base=rdflib.Namespace('https://ark.lib.uchicago.edu/ark:61001/')))
+    subgraph.parse(data=r.text, format='turtle')
 
     #############
     # STAGE TWO #
@@ -863,6 +876,7 @@ def seriesdata(noid):
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
+        PREFIX lexvo: <https://www.iso.org/standard/39534.html>
 
         SELECT DISTINCT ?languageCode ?languageRole
         WHERE {{
@@ -889,6 +903,7 @@ def seriesdata(noid):
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
+        PREFIX lexvo: <https://www.iso.org/standard/39534.html>
 
         SELECT DISTINCT ?languageCode ?languageRole
         WHERE {{
@@ -959,7 +974,7 @@ def seriesdata(noid):
     # Date
     q = '''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
-        PREFIX dcterms: <http://purl.org/dc/terms/>
+
         PREFIX dma: <http://lib.uchicago.edu/dma/>
 
         SELECT DISTINCT ?displayDate
@@ -975,6 +990,7 @@ def seriesdata(noid):
     # Description
     q = '''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX dc: <http://purl.org/dc/elements/1.1/>
 
         SELECT DISTINCT ?description
@@ -990,6 +1006,7 @@ def seriesdata(noid):
     # Items
     q = '''
         BASE <https://ark.lib.uchicago.edu/ark:61001/>
+
         PREFIX bf: <http://id.loc.gov/ontologies/bibframe/>
         PREFIX dcterms: <http://purl.org/dc/terms/>
         PREFIX dma: <http://lib.uchicago.edu/dma/>
