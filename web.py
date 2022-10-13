@@ -726,8 +726,7 @@ def seriesdata(noid):
                 ?contributorNode dma:itemContributorRole ?contributorRole .
                 FILTER(?contributorRole != 'contributor')
             }} UNION {{
-                ?coverageItem dcterms:isPartOf <{0}> .
-                ?coverageItem dma:coverage ?coverageNode .
+                <{0}> dma:coverage ?coverageNode .
                 ?coverageNode ?coveragePredicate ?coverageSubject .
             }} UNION {{
                 ?dateItem dcterms:isPartOf <{0}> .
