@@ -18,8 +18,8 @@ class SetEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 def glotto_labels(code):
-    #with open(app.config['GLOTTO_JSON']) as f:
-    with open('glotto.json') as f:
+    #with open('glotto.json') as f:
+    with open(app.config['GLOTTO_JSON']) as f:
         lookup = json.load(f)
     try:
         return lookup[code]
@@ -253,7 +253,7 @@ def object(noid):
     assert re.match('^[a-z0-9]{12}$', noid)
 
     r = requests.get('{}/objectdata/{}/'.format(
-        'http://localhost:5000',
+        'https://mlp.lib.uchicago.edu',
         noid
     ))
     metadata = json.loads(r.text)
